@@ -41,6 +41,8 @@
     "vitest-browser-svelte": "^2.0.1"
   },
   "dependencies": {
+    "@babylonjs/core": "^8.45.5",
+    "@babylonjs/loaders": "^8.45.5",
     "@fontsource/ibm-plex-sans": "^5.2.8"
   }
 }
