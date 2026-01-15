@@ -24,11 +24,7 @@
   import { registerBuiltInLoaders } from "@babylonjs/loaders/dynamic";
   import Button from "./Button.svelte";
 
-  interface Props {
-    modelUrl: string;
-  }
-
-  let { modelUrl }: Props = $props();
+  let { modelUrl }: { modelUrl: string } = $props();
 
   const ZOOM_STEP = 1.5;
   const ANIMATION_FRAME_RATE = 60;
