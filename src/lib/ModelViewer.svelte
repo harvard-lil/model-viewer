@@ -56,7 +56,7 @@
       camera.lowerRadiusLimit = 0.1;
       camera.upperRadiusLimit = 1000;
       camera.wheelDeltaPercentage = 0.01;
-      camera.panningSensibility = 20;
+      camera.panningSensibility = 0;
       scene.activeCamera = camera;
 
       const light = new HemisphericLight("light", new Vector3(0, 1, 0), scene);
@@ -121,7 +121,7 @@
           const radius = Math.max(postMaxDimension * 1.5, 3);
           camera.radius = radius;
 
-          const upperLimit = Math.max(radius * 8, radius + 5);
+          const upperLimit = Math.max(radius * 4, radius + 5);
           camera.lowerRadiusLimit = 0.01;
           camera.upperRadiusLimit = upperLimit;
           camera.minZ = 0.01;
