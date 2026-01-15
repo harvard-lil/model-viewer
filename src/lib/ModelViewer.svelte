@@ -19,10 +19,8 @@
     Vector3
   } from "@babylonjs/core";
   import { LoadAssetContainerAsync } from "@babylonjs/core/Loading/sceneLoader";
-  import "@babylonjs/loaders/glTF";
-  import "@babylonjs/loaders/OBJ";
-  import "@babylonjs/loaders/STL";
-    import Button from "./Button.svelte";
+  import { registerBuiltInLoaders } from "@babylonjs/loaders/dynamic";
+  import Button from "./Button.svelte";
 
   interface Props {
     modelUrl: string;
@@ -175,6 +173,8 @@
     if (!canvasElement || !modelUrl) return;
 
     try {
+      registerBuiltInLoaders();
+
       engine = new Engine(canvasElement, true, {
         preserveDrawingBuffer: true,
         stencil: true
