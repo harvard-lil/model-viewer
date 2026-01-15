@@ -11,12 +11,14 @@
     EasingFunction,
     Engine,
     HemisphericLight,
+    Mesh,
     Observer,
     QuadraticEase,
     Scene,
     StandardMaterial,
     TransformNode,
-    Vector3
+    Vector3,
+    VertexData
   } from "@babylonjs/core";
   import { LoadAssetContainerAsync } from "@babylonjs/core/Loading/sceneLoader";
   import { registerBuiltInLoaders } from "@babylonjs/loaders/dynamic";
@@ -31,6 +33,51 @@
   const ZOOM_STEP = 1.5;
   const ANIMATION_FRAME_RATE = 60;
   const ANIMATION_FRAMES = 20;
+
+  const isObjSource = (url: string) => {
+    return new URL(url).pathname.toLowerCase().endsWith(".obj");
+  };
+
+  const rebuildMesh = (mesh: AbstractMesh, scene: Scene) => {
+    const positions = mesh.getVerticesData("position");
+    const indices = mesh.getIndices();
+    if (!positions || positions.length === 0 || !indices || indices.length === 0) {
+      return null;
+    }
+
+    const vertexData = new VertexData();
+    vertexData.positions = positions;
+    vertexData.indices = indices;
+
+    const normals = mesh.getVerticesData("normal");
+    if (normals && normals.length > 0) {
+      vertexData.normals = normals;
+    }
+
+    const uvs = mesh.getVerticesData("uv");
+    if (uvs && uvs.length > 0) {
+      vertexData.uvs = uvs;
+    }
+
+    const colors = mesh.getVerticesData("color");
+    if (colors && colors.length > 0) {
+      vertexData.colors = colors;
+    }
+
+    const rebuilt = new Mesh(mesh.name, scene);
+    vertexData.applyToMesh(rebuilt, false);
+    rebuilt.position.copyFrom(mesh.position);
+    rebuilt.scaling.copyFrom(mesh.scaling);
+    if (mesh.rotationQuaternion) {
+      rebuilt.rotationQuaternion = mesh.rotationQuaternion.clone();
+    } else {
+      rebuilt.rotation.copyFrom(mesh.rotation);
+    }
+    rebuilt.isVisible = mesh.isVisible;
+    rebuilt.setEnabled(mesh.isEnabled());
+    rebuilt.material = mesh.material;
+    return rebuilt;
+  };
 
   let canvasElement: HTMLCanvasElement;
   let engine: Engine | null = null;
@@ -216,17 +263,32 @@
       }
       assetContainer.addAllToScene();
 
-      renderMeshes = assetContainer.meshes.filter((m) => m.getTotalVertices() > 0);
-      assetContainer.meshes.forEach((mesh: AbstractMesh, index: number) => {
-        mesh.setEnabled(true);
-        mesh.isVisible = true;
+      const objSource = isObjSource(modelUrl);
+      const meshes = assetContainer.meshes.filter((mesh) => mesh.getTotalVertices() > 0);
+      const rebuiltMeshes: AbstractMesh[] = [];
 
-        if (!mesh.material && scene) {
+      meshes.forEach((mesh: AbstractMesh, index: number) => {
+        let targetMesh: AbstractMesh = mesh;
+        if (objSource && scene) {
+          const rebuiltMesh = rebuildMesh(mesh, scene);
+          if (rebuiltMesh) {
+            mesh.dispose(false, true);
+            targetMesh = rebuiltMesh;
+          }
+        }
+        rebuiltMeshes.push(targetMesh);
+
+        targetMesh.setEnabled(true);
+        targetMesh.isVisible = true;
+
+        if (!targetMesh.material && scene) {
           const defaultMat = new StandardMaterial(`defaultMat_${index}`, scene);
           defaultMat.diffuseColor = new Color3(0.8, 0.8, 0.8);
-          mesh.material = defaultMat;
+          targetMesh.material = defaultMat;
         }
       });
+
+      renderMeshes = objSource ? rebuiltMeshes : meshes;
 
       if (renderMeshes.length > 0) {
         modelRoot = new TransformNode("modelRoot", scene);
@@ -316,10 +378,14 @@
   <div id="toolbar" class="absolute top-0 left-0 z-1 flex flex-col m-2 gap-1">
     <Button icon={Plus} onclick={() => zoom(true)} title="Zoom in" />
     <Button icon={Minus} onclick={() => zoom(false)} title="Zoom out" />
-    <Button icon={Rotate3d} onclick={() => {
-      isFlipped = !isFlipped;
-      flipModel();
-    }} title="Flip model on axis" />
+    <Button
+      icon={Rotate3d}
+      onclick={() => {
+        isFlipped = !isFlipped;
+        flipModel();
+      }}
+      title="Flip model on axis"
+    />
   </div>
 
   <canvas
