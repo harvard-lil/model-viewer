@@ -1,13 +1,18 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
+  import { Minus, Plus, Rotate3d } from "lucide-svelte";
   import {
     AbstractMesh,
+    Animation,
     ArcRotateCamera,
     Color3,
     Color4,
     DirectionalLight,
+    EasingFunction,
     Engine,
     HemisphericLight,
+    Observer,
+    QuadraticEase,
     Scene,
     StandardMaterial,
     TransformNode,
@@ -17,6 +22,7 @@
   import "@babylonjs/loaders/glTF";
   import "@babylonjs/loaders/OBJ";
   import "@babylonjs/loaders/STL";
+    import Button from "./Button.svelte";
 
   interface Props {
     modelUrl: string;
@@ -24,12 +30,146 @@
 
   let { modelUrl }: Props = $props();
 
+  const ZOOM_STEP = 1.5;
+  const ANIMATION_FRAME_RATE = 60;
+  const ANIMATION_FRAMES = 20;
+
   let canvasElement: HTMLCanvasElement;
   let engine: Engine | null = null;
   let scene: Scene | null = null;
   let camera: ArcRotateCamera | null = null;
+  let modelRoot: TransformNode | null = null;
+  let modelFlip: TransformNode | null = null;
+  let renderMeshes: AbstractMesh[] = [];
   let handleResize: (() => void) | null = null;
+  let zoomAnim: { stop: () => void } | null = null;
+  let flipAnim: { stop: () => void } | null = null;
+  let flipRecenterObserver: Observer<Scene> | null = null;
+
+  let isFlipAnimating = false;
   let isDragging = $state(false);
+  let isFlipped = $state(false);
+
+  const getWorldBounds = (meshes: AbstractMesh[]) => {
+    if (!meshes.length) return null;
+    let min = new Vector3(
+      Number.POSITIVE_INFINITY,
+      Number.POSITIVE_INFINITY,
+      Number.POSITIVE_INFINITY
+    );
+    let max = new Vector3(
+      Number.NEGATIVE_INFINITY,
+      Number.NEGATIVE_INFINITY,
+      Number.NEGATIVE_INFINITY
+    );
+
+    meshes.forEach((mesh) => {
+      mesh.computeWorldMatrix(true);
+      mesh.refreshBoundingInfo({});
+      const bounds = mesh.getBoundingInfo().boundingBox;
+      min = Vector3.Minimize(min, bounds.minimumWorld);
+      max = Vector3.Maximize(max, bounds.maximumWorld);
+    });
+
+    return { min, max };
+  };
+
+  const recenterModel = () => {
+    if (!modelRoot || !renderMeshes.length) return;
+    const bounds = getWorldBounds(renderMeshes);
+    if (!bounds) return;
+    const center = Vector3.Center(bounds.min, bounds.max);
+    if (center.lengthSquared() > 1e-6) {
+      modelRoot.position.subtractInPlace(center);
+      modelRoot.computeWorldMatrix(true);
+    }
+  };
+
+  const flipModel = () => {
+    if (!modelFlip || !scene) return;
+    const currentScene = scene;
+    const targetRotation = isFlipped ? Math.PI : 0;
+
+    if (flipAnim) {
+      flipAnim.stop();
+    }
+    if (flipRecenterObserver) {
+      currentScene.onBeforeRenderObservable.remove(flipRecenterObserver);
+      flipRecenterObserver = null;
+    }
+
+    const flipAnimation = new Animation(
+      "modelFlip",
+      "rotation.x",
+      ANIMATION_FRAME_RATE,
+      Animation.ANIMATIONTYPE_FLOAT,
+      Animation.ANIMATIONLOOPMODE_CONSTANT
+    );
+    flipAnimation.setKeys([
+      { frame: 0, value: modelFlip.rotation.x },
+      { frame: ANIMATION_FRAMES, value: targetRotation }
+    ]);
+
+    const easing = new QuadraticEase();
+    easing.setEasingMode(EasingFunction.EASINGMODE_EASEINOUT);
+    flipAnimation.setEasingFunction(easing);
+
+    isFlipAnimating = true;
+    flipRecenterObserver = currentScene.onBeforeRenderObservable.add(() => {
+      if (isFlipAnimating) {
+        recenterModel();
+      }
+    });
+
+    flipAnim = currentScene.beginDirectAnimation(
+      modelFlip,
+      [flipAnimation],
+      0,
+      ANIMATION_FRAMES,
+      false,
+      1,
+      () => {
+        isFlipAnimating = false;
+        if (flipRecenterObserver) {
+          currentScene.onBeforeRenderObservable.remove(flipRecenterObserver);
+          flipRecenterObserver = null;
+        }
+        modelFlip?.computeWorldMatrix(true);
+        recenterModel();
+      }
+    );
+  };
+
+  const zoom = (zoomIn: boolean) => {
+    if (!camera || !scene) return;
+    const factor = 1 + ZOOM_STEP;
+    const targetRadius = zoomIn === true ? camera.radius / factor : camera.radius * factor;
+    const min = camera.lowerRadiusLimit ?? 0.01;
+    const max = camera.upperRadiusLimit ?? Number.POSITIVE_INFINITY;
+    const clampedRadius = Math.min(max, Math.max(min, targetRadius));
+
+    if (zoomAnim) {
+      zoomAnim.stop();
+    }
+
+    const zoomAnimation = new Animation(
+      "cameraZoom",
+      "radius",
+      ANIMATION_FRAME_RATE,
+      Animation.ANIMATIONTYPE_FLOAT,
+      Animation.ANIMATIONLOOPMODE_CONSTANT
+    );
+    zoomAnimation.setKeys([
+      { frame: 0, value: camera.radius },
+      { frame: ANIMATION_FRAMES, value: clampedRadius }
+    ]);
+
+    const easing = new QuadraticEase();
+    easing.setEasingMode(EasingFunction.EASINGMODE_EASEINOUT);
+    zoomAnimation.setEasingFunction(easing);
+
+    zoomAnim = scene.beginDirectAnimation(camera, [zoomAnimation], 0, ANIMATION_FRAMES, false);
+  };
 
   onMount(async () => {
     if (!canvasElement || !modelUrl) return;
@@ -41,7 +181,7 @@
       });
 
       scene = new Scene(engine);
-      scene.clearColor = new Color4(0.1, 0.1, 0.1, 1.0);
+      scene.clearColor = new Color4(0.067, 0.067, 0.067, 0);
 
       camera = new ArcRotateCamera(
         "camera",
@@ -76,7 +216,7 @@
       }
       assetContainer.addAllToScene();
 
-      const renderMeshes = assetContainer.meshes.filter((m) => m.getTotalVertices() > 0);
+      renderMeshes = assetContainer.meshes.filter((m) => m.getTotalVertices() > 0);
       assetContainer.meshes.forEach((mesh: AbstractMesh, index: number) => {
         mesh.setEnabled(true);
         mesh.isVisible = true;
@@ -89,14 +229,15 @@
       });
 
       if (renderMeshes.length > 0) {
-        const modelPivot = new TransformNode("modelPivot", scene);
-        renderMeshes.forEach((m) => m.setParent(modelPivot, true, true));
-        modelPivot.computeWorldMatrix(true);
-        const preBounds = modelPivot.getHierarchyBoundingVectors(
-          true,
-          (m) => m.getTotalVertices() > 0
-        );
-        const center = Vector3.Center(preBounds.min, preBounds.max);
+        modelRoot = new TransformNode("modelRoot", scene);
+        modelFlip = new TransformNode("modelFlip", scene);
+        modelFlip.setParent(modelRoot);
+        renderMeshes.forEach((m) => m.setParent(modelFlip, true, true));
+        modelRoot.computeWorldMatrix(true);
+        const preBounds = getWorldBounds(renderMeshes);
+        if (!preBounds) {
+          throw new Error("Failed to compute model bounds");
+        }
         const size = preBounds.max.subtract(preBounds.min);
         const maxDimension = Math.max(size.x, size.y, size.z);
 
@@ -104,14 +245,15 @@
           const desiredSize = 10;
           const scale = desiredSize / maxDimension;
 
-          modelPivot.scaling = new Vector3(scale, scale, scale);
-          modelPivot.position = center.scale(-scale);
-          modelPivot.computeWorldMatrix(true);
+          modelRoot.scaling = new Vector3(scale, scale, scale);
+          modelRoot.position = Vector3.Zero();
+          flipModel();
+          modelRoot.computeWorldMatrix(true);
 
-          const postBounds = modelPivot.getHierarchyBoundingVectors(
-            true,
-            (m) => m.getTotalVertices() > 0
-          );
+          const postBounds = getWorldBounds(renderMeshes);
+          if (!postBounds) {
+            throw new Error("Failed to compute model bounds");
+          }
           const postSize = postBounds.max.subtract(postBounds.min);
           const postMaxDimension = Math.max(postSize.x, postSize.y, postSize.z);
 
@@ -120,16 +262,16 @@
 
           const radius = Math.max(postMaxDimension * 1.5, 3);
           camera.radius = radius;
+          camera.alpha = -Math.PI / 2;
+          camera.beta = Math.PI / 2.5;
 
-          const upperLimit = Math.max(radius * 4, radius + 5);
-          camera.lowerRadiusLimit = 0.01;
+          const upperLimit = Math.max(radius * 2.5, radius + 5);
+          camera.lowerRadiusLimit = 0.5;
           camera.upperRadiusLimit = upperLimit;
           camera.minZ = 0.01;
           camera.maxZ = camera.upperRadiusLimit * 5;
-
-          camera.zoomOn(renderMeshes, true);
-          camera.maxZ = camera.upperRadiusLimit * 5;
         } else {
+          flipModel();
           camera.setTarget(Vector3.Zero());
           camera.radius = 10;
         }
@@ -157,6 +299,10 @@
     if (camera) {
       camera.detachControl();
     }
+    if (scene && flipRecenterObserver) {
+      scene.onBeforeRenderObservable.remove(flipRecenterObserver);
+      flipRecenterObserver = null;
+    }
     if (engine) {
       engine.dispose();
     }
@@ -166,13 +312,24 @@
   });
 </script>
 
-<canvas
-  bind:this={canvasElement}
-  class="block w-full h-full touch-none"
-  class:cursor-grab={!isDragging}
-  class:cursor-grabbing={isDragging}
-  onpointerdown={() => (isDragging = true)}
-  onpointerup={() => (isDragging = false)}
-  onpointerleave={() => (isDragging = false)}
-  onpointercancel={() => (isDragging = false)}
-></canvas>
+<div class="relative w-full h-full">
+  <div id="toolbar" class="absolute top-0 left-0 z-1 flex flex-col m-2 gap-1">
+    <Button icon={Plus} onclick={() => zoom(true)} title="Zoom in" />
+    <Button icon={Minus} onclick={() => zoom(false)} title="Zoom out" />
+    <Button icon={Rotate3d} onclick={() => {
+      isFlipped = !isFlipped;
+      flipModel();
+    }} title="Flip model on axis" />
+  </div>
+
+  <canvas
+    bind:this={canvasElement}
+    class="block w-full h-full bg-source-950"
+    class:cursor-grab={!isDragging}
+    class:cursor-grabbing={isDragging}
+    onpointerdown={() => (isDragging = true)}
+    onpointerup={() => (isDragging = false)}
+    onpointerleave={() => (isDragging = false)}
+    onpointercancel={() => (isDragging = false)}
+  ></canvas>
+</div>
